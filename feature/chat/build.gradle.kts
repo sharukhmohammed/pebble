@@ -29,9 +29,11 @@ dependencies {
     implementation(libs.koin.compose)
     implementation(libs.koin.compose.viewmodel)
 
-    implementation(projects.core.design)
-    implementation(projects.core.domain)
+    // core:ai kept for AiAvailability sealed type used in UiState.
+    // When KMP is introduced, AiAvailability should move to core:domain.
     implementation(projects.core.ai)
+    implementation(projects.core.domain)
+    implementation(projects.core.design)
 
     debugImplementation(libs.compose.ui.tooling)
 
