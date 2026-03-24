@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splash screen theme — postSplashScreenTheme switches to NoActionBar after launch -->
+    <style name="Theme.PebbleAI" parent="Theme.SplashScreen">
+        <item name="postSplashScreenTheme">@style/Theme.PebbleAI.Main</item>
+    </style>
+
+    <style name="Theme.PebbleAI.Main" parent="Theme.Material3.DayNight.NoActionBar" />
+</resources>
