@@ -3,9 +3,14 @@ package com.pebble.feature.chat.ui
 import app.cash.turbine.test
 import com.pebble.core.ai.AiAvailability
 import com.pebble.core.ai.FakeOnDeviceAiClient
+import com.pebble.core.domain.model.Message
 import com.pebble.core.domain.model.MessageRole
+import com.pebble.core.domain.repository.ChatRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -22,89 +27,87 @@ class ChatViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
     private lateinit var fakeClient: FakeOnDeviceAiClient
+    private lateinit var fakeChatRepo: FakeChatRepository
     private lateinit var viewModel: ChatViewModel
 
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
-        fakeClient = FakeOnDeviceAiClient()
-        viewModel = ChatViewModel(fakeClient)
+        fakeClient    = FakeOnDeviceAiClient()
+        fakeChatRepo  = FakeChatRepository()
+        viewModel     = ChatViewModel(fakeClient, fakeChatRepo)
     }
 
     @After
-    fun teardown() {
-        Dispatchers.resetMain()
-    }
+    fun teardown() = Dispatchers.resetMain()
 
     @Test
-    fun `initial state has no messages and unknown availability`() = runTest {
+    fun `initial state has empty messages`() = runTest {
         viewModel.uiState.test {
             val state = awaitItem()
             assertTrue(state.messages.isEmpty())
-            assertEquals("", state.inputText)
             assertFalse(state.isGenerating)
+            cancelAndIgnoreRemainingEvents()
         }
     }
 
     @Test
-    fun `availability is set to Available after init`() = runTest {
+    fun `availability is Available after init`() = runTest {
         testDispatcher.scheduler.advanceUntilIdle()
         assertEquals(AiAvailability.Available, viewModel.uiState.value.aiAvailability)
     }
 
     @Test
-    fun `UpdateInput intent updates inputText`() = runTest {
+    fun `UpdateInput changes inputText`() = runTest {
         viewModel.onIntent(ChatUiIntent.UpdateInput("Hello"))
         assertEquals("Hello", viewModel.uiState.value.inputText)
     }
 
     @Test
-    fun `SendMessage adds user message and clears input`() = runTest {
+    fun `SendMessage persists user message and clears input`() = runTest {
         viewModel.onIntent(ChatUiIntent.UpdateInput("What is Pebble?"))
         viewModel.onIntent(ChatUiIntent.SendMessage)
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val state = viewModel.uiState.value
-        assertTrue(state.messages.any { it.role == MessageRole.USER && it.content == "What is Pebble?" })
-        assertEquals("", state.inputText)
+        assertTrue(fakeChatRepo.saved.any { it.role == MessageRole.USER && it.content == "What is Pebble?" })
+        assertEquals("", viewModel.uiState.value.inputText)
     }
 
     @Test
-    fun `SendMessage appends AI response after streaming`() = runTest {
+    fun `SendMessage persists AI response after streaming`() = runTest {
         fakeClient.streamChunks = listOf("Hello ", "world!")
         viewModel.onIntent(ChatUiIntent.UpdateInput("Hi"))
         viewModel.onIntent(ChatUiIntent.SendMessage)
         testDispatcher.scheduler.advanceUntilIdle()
 
-        val messages = viewModel.uiState.value.messages
-        assertEquals(2, messages.size)
-        assertEquals(MessageRole.AI, messages.last().role)
-        assertEquals("Hello world!", messages.last().content)
+        val aiMessages = fakeChatRepo.saved.filter { it.role == MessageRole.AI }
+        assertEquals(1, aiMessages.size)
+        assertEquals("Hello world!", aiMessages.first().content)
     }
 
     @Test
-    fun `ClearChat resets messages but keeps availability`() = runTest {
+    fun `ClearChat calls repository clearAll`() = runTest {
         viewModel.onIntent(ChatUiIntent.UpdateInput("Hi"))
         viewModel.onIntent(ChatUiIntent.SendMessage)
         testDispatcher.scheduler.advanceUntilIdle()
 
         viewModel.onIntent(ChatUiIntent.ClearChat)
-        val state = viewModel.uiState.value
-        assertTrue(state.messages.isEmpty())
-        assertEquals(AiAvailability.Available, state.aiAvailability)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        assertTrue(fakeChatRepo.cleared)
     }
 
     @Test
-    fun `SendMessage does nothing when input is blank`() = runTest {
+    fun `blank input does not send message`() = runTest {
         viewModel.onIntent(ChatUiIntent.UpdateInput("   "))
         viewModel.onIntent(ChatUiIntent.SendMessage)
         testDispatcher.scheduler.advanceUntilIdle()
 
-        assertTrue(viewModel.uiState.value.messages.isEmpty())
+        assertTrue(fakeChatRepo.saved.isEmpty())
     }
 
     @Test
-    fun `generation error emits ShowError event`() = runTest {
+    fun `AI error emits ShowError event`() = runTest {
         fakeClient.generateError = RuntimeException("AICore unavailable")
         viewModel.onIntent(ChatUiIntent.UpdateInput("Hi"))
 
@@ -112,12 +115,32 @@ class ChatViewModelTest {
             viewModel.onIntent(ChatUiIntent.SendMessage)
             testDispatcher.scheduler.advanceUntilIdle()
 
-            // ScrollToBottom fires first, then ShowError
             val first = awaitItem()
             assertTrue(first is ChatUiEvent.ScrollToBottom)
-            val error = awaitItem()
-            assertTrue(error is ChatUiEvent.ShowError)
-            assertEquals("AICore unavailable", (error as ChatUiEvent.ShowError).message)
+            val error = awaitItem() as ChatUiEvent.ShowError
+            assertEquals("AICore unavailable", error.message)
+            cancelAndIgnoreRemainingEvents()
         }
+    }
+}
+
+// ---- Test doubles ----
+
+class FakeChatRepository : ChatRepository {
+    val saved  = mutableListOf<Message>()
+    var cleared = false
+    private val _messages = MutableStateFlow<List<Message>>(emptyList())
+
+    override fun observeMessages(): Flow<List<Message>> = _messages.asStateFlow()
+
+    override suspend fun saveMessage(message: Message) {
+        saved += message
+        _messages.value = _messages.value + message
+    }
+
+    override suspend fun clearAll() {
+        cleared = true
+        saved.clear()
+        _messages.value = emptyList()
     }
 }

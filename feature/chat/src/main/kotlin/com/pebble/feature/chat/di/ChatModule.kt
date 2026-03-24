@@ -5,5 +5,6 @@ import org.koin.compose.viewmodel.dsl.viewModel
 import org.koin.dsl.module
 
 val chatModule = module {
-    viewModel { ChatViewModel(aiClient = get()) }
+    // aiClient and chatRepository are satisfied by :core:ai and :core:data modules respectively.
+    viewModel { ChatViewModel(aiClient = get(), chatRepository = get()) }
 }
