@@ -1,9 +1,17 @@
 package com.pebble.feature.chat.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -11,19 +19,23 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.SignalWifiOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -42,6 +54,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.pebble.core.ai.AiAvailability
 import com.pebble.core.design.animation.PebbleMotion
 import com.pebble.core.design.components.PebbleLoadingDots
 import com.pebble.feature.chat.ui.components.ChatInputBar
@@ -78,7 +91,16 @@ fun ChatScreen(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
-                title = { Text("Pebble AI") },
+                title = {
+                    Column {
+                        Text("Pebble AI")
+                        Text(
+                            text = "Offline \u2022 Private",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back")
@@ -105,31 +127,46 @@ fun ChatScreen(
             )
         },
     ) { innerPadding ->
-        AnimatedContent(
-            targetState = uiState.messages.isEmpty() && !uiState.isGenerating,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding),
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
-            label = "chat_content",
-        ) { isEmpty ->
-            if (isEmpty) {
-                EmptyChatContent(modifier = Modifier.fillMaxSize())
-            } else {
-                MessageList(
-                    uiState = uiState,
-                    listState = listState,
-                    modifier = Modifier.fillMaxSize(),
-                )
+        when (val availability = uiState.aiAvailability) {
+            is AiAvailability.Unavailable -> UnavailableContent(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+            is AiAvailability.Downloading -> DownloadingContent(
+                progress = availability.progress,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+            else -> AnimatedContent(
+                targetState = uiState.messages.isEmpty() && !uiState.isGenerating,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                transitionSpec = { fadeIn(tween(200)) togetherWith fadeOut(tween(150)) },
+                label = "chat_content",
+            ) { isEmpty ->
+                if (isEmpty) {
+                    EmptyChatContent(modifier = Modifier.fillMaxSize())
+                } else {
+                    MessageList(
+                        uiState = uiState,
+                        listState = listState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }
 }
 
+// ---- Content states ----
+
 @Composable
 private fun MessageList(
     uiState: ChatUiState,
-    listState: androidx.compose.foundation.lazy.LazyListState,
+    listState: LazyListState,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
@@ -137,16 +174,13 @@ private fun MessageList(
         modifier = modifier,
         contentPadding = PaddingValues(vertical = 8.dp),
     ) {
-        items(
-            items = uiState.messages,
-            key = { it.id },
-        ) { message ->
+        items(uiState.messages, key = { it.id }) { message ->
             MessageBubble(
                 message = message,
                 modifier = Modifier
                     .fillMaxWidth()
                     .animateItem(
-                        fadeInSpec = androidx.compose.animation.core.tween(PebbleMotion.DurationMedium),
+                        fadeInSpec    = tween(PebbleMotion.DurationMedium),
                         placementSpec = PebbleMotion.itemPlacementSpec,
                     ),
             )
@@ -159,7 +193,7 @@ private fun MessageList(
                     modifier = Modifier
                         .fillMaxWidth()
                         .animateItem(
-                            fadeInSpec = androidx.compose.animation.core.tween(PebbleMotion.DurationMedium),
+                            fadeInSpec    = tween(PebbleMotion.DurationMedium),
                             placementSpec = PebbleMotion.itemPlacementSpec,
                         ),
                 )
@@ -170,58 +204,40 @@ private fun MessageList(
 
 @Composable
 private fun EmptyChatContent(modifier: Modifier = Modifier) {
-    androidx.compose.foundation.layout.Box(
-        modifier = modifier,
-        contentAlignment = Alignment.Center,
-    ) {
+    val infiniteTransition = rememberInfiniteTransition(label = "float")
+    val iconOffsetY by infiniteTransition.animateFloat(
+        initialValue  = -6f,
+        targetValue   = 6f,
+        animationSpec = infiniteRepeatable(
+            animation  = tween(2400, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "icon_float",
+    )
+
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
             modifier = Modifier.padding(horizontal = 40.dp),
         ) {
-            // Gently floating icon using infinite transition
-            val infiniteTransition =
-                androidx.compose.animation.core.rememberInfiniteTransition(label = "float")
-            val offsetY by infiniteTransition.animateFloat(
-                initialValue = -6f,
-                targetValue = 6f,
-                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                    animation = androidx.compose.animation.core.tween(
-                        2400,
-                        easing = androidx.compose.animation.core.FastOutSlowInEasing,
-                    ),
-                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse,
-                ),
-                label = "icon_float",
-            )
-
             Icon(
                 imageVector = Icons.Rounded.AutoAwesome,
                 contentDescription = null,
                 modifier = Modifier
                     .size(64.dp)
-                    .padding(bottom = 0.dp)
-                    .then(
-                        Modifier.then(
-                            androidx.compose.ui.Modifier.offset(
-                                y = offsetY.dp,
-                            )
-                        )
-                    ),
+                    .offset(y = iconOffsetY.dp),
                 tint = MaterialTheme.colorScheme.primary,
             )
-
             Spacer(Modifier.height(24.dp))
-
             Text(
                 text = "Ask me anything",
                 style = MaterialTheme.typography.headlineSmall,
                 textAlign = TextAlign.Center,
             )
-
             Spacer(Modifier.height(8.dp))
-
             Text(
-                text = "All responses are generated on your device. Completely offline, completely private.",
+                text = "All responses are generated on your device.\nCompletely offline, completely private.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -230,19 +246,70 @@ private fun EmptyChatContent(modifier: Modifier = Modifier) {
     }
 }
 
-// Compose extension alias to remove the verbose import in the offset call above
-private fun Modifier.offset(y: androidx.compose.ui.unit.Dp) =
-    this.then(androidx.compose.foundation.layout.offset(y = y))
+@Composable
+private fun UnavailableContent(modifier: Modifier = Modifier) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 40.dp),
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.SignalWifiOff,
+                contentDescription = null,
+                modifier = Modifier.size(56.dp),
+                tint = MaterialTheme.colorScheme.error,
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                text = "On-device AI unavailable",
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Gemini Nano is not supported on this device or\nAndroid AICore is not installed.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
 
-private fun androidx.compose.animation.core.InfiniteTransition.animateFloat(
-    initialValue: Float,
-    targetValue: Float,
-    animationSpec: androidx.compose.animation.core.InfiniteRepeatableSpec<Float>,
-    label: String,
-): androidx.compose.runtime.State<Float> =
-    animateFloat(
-        initialValue  = initialValue,
-        targetValue   = targetValue,
-        animationSpec = animationSpec,
-        label         = label,
-    )
+@Composable
+private fun DownloadingContent(
+    progress: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 40.dp),
+        ) {
+            PebbleLoadingDots()
+            Spacer(Modifier.height(24.dp))
+            Text(
+                text = "Preparing on-device AI…",
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Gemini Nano is being set up by the system.\nThis only happens once.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            if (progress > 0f) {
+                Spacer(Modifier.height(20.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Spacer(Modifier.height(20.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+    }
+}
